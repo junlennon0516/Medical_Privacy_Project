@@ -1,0 +1,36 @@
+# --- 컴파일된 바이너리 및 객체 파일 ---
+*.exe
+*.dll
+*.so
+*.dylib
+*.lib
+*.a
+*.o
+*.obj
+
+# --- 빌드 폴더 (CMake, Visual Studio 등) ---
+build/
+bin/
+out/
+Debug/
+Release/
+x64/
+x86/
+.vs/
+cmake-build-debug/
+cmake-build-release/
+
+# --- IDE 설정 파일 (필요에 따라 제외) ---
+.vscode/
+*.user
+*.suo
+*.ipch
+
+# --- OS 생성 파일 ---
+.DS_Store
+Thumbs.db
+
+# --- 라이브러리/의존성 폴더 (직접 소스를 포함하지 않는 경우) ---
+# 만약 Microsoft SEAL 등을 vcpkg나 외부 폴더로 관리한다면 제외 추천
+vcpkg/
+installed/
