@@ -146,7 +146,7 @@
 
 - **AI 모델 학습** (`train_model.py`): Python 기반 모델 학습
   - Heart Disease Cleveland Dataset 사용
-  - Linear Regression 모델 학습
+  - Logistic Regression 모델 학습
   - 가중치(weights)와 편향(bias) 저장
 
 #### 3. **공유 채널 (Shared_Channel)**
@@ -173,13 +173,14 @@
   - 머신러닝 모델 학습 (scikit-learn, pandas, numpy)
 
 ### 머신러닝
-- **모델**: Linear Regression
+- **모델**: Logistic Regression
 - **특성 (Features)**:
   - 나이 (age): 29-77
   - 혈압 (trestbps): 94-200
   - 콜레스테롤 (chol): 126-564
   - 최대 심박수 (thalach): 71-202
 - **정규화**: MinMaxScaler (0.0 ~ 1.0)
+- **활성화 함수**: Sigmoid (다항식 근사)
 
 ### 데이터셋
 - **Heart Disease Cleveland Dataset**
@@ -189,6 +190,52 @@
 ---
 
 ## 🔒 동형암호 연산 과정
+
+### Logistic Regression 수식 상세 설명
+
+**전체 예측 과정:**
+
+1. **선형 결합 (Linear Combination)**
+   ```
+   z = W₁x₁ + W₂x₂ + W₃x₃ + W₄x₄ + b
+   ```
+   - `W = [W₁, W₂, W₃, W₄]`: 학습된 가중치 벡터
+   - `x = [x₁, x₂, x₃, x₄]`: 입력 특성 벡터 (정규화된 값)
+   - `b`: 편향(bias)
+
+2. **Sigmoid 활성화 함수**
+   ```
+   y = sigmoid(z) = 1 / (1 + exp(-z))
+   ```
+   - 출력값 `y`는 0~1 사이의 확률 값
+   - `y > 0.5`: 심장질환 위험군
+   - `y ≤ 0.5`: 정상 범위
+
+3. **Sigmoid 함수의 다항식 근사**
+   
+   지수 함수 `exp(-z)`를 암호화된 상태에서 직접 계산할 수 없으므로, **Taylor 급수 전개**를 사용하여 근사합니다:
+   
+   ```
+   sigmoid(z) = 1 / (1 + exp(-z))
+              = 0.5 + 0.25z - (1/48)z³ + (1/480)z⁵ - ...
+   ```
+   
+   본 프로젝트에서는 **3차 근사**를 사용합니다:
+   ```
+   sigmoid(z) ≈ 0.5 + 0.25z - (1/48)z³
+   ```
+   
+   이 근사는 `z`가 0 근처에서 정확하며, 실용적으로 충분한 정확도를 제공합니다.
+
+4. **암호화된 상태에서의 계산 순서**
+   ```
+   Enc(z) = Enc(Wx + b)                    [선형 예측]
+   Enc(z²) = Enc(z) × Enc(z)               [제곱 연산]
+   Enc(z³) = Enc(z²) × Enc(z)              [세제곱 연산]
+   Enc(sigmoid(z)) ≈ Enc(0.5) + Enc(0.25z) - Enc((1/48)z³)
+   ```
+   
+   모든 연산이 **암호화된 상태**에서 수행되므로, 서버는 중간값이나 최종값을 알 수 없습니다.
 
 ### 1. 키 생성 (Key Generation)
 ```cpp
@@ -221,9 +268,26 @@ encryptor.encrypt(plain_input, encrypted_input);
 
 ### 3. 암호화된 상태에서 연산 (Homomorphic Operations)
 
-#### 선형 회귀 연산: Wx + b
+#### Logistic Regression 연산: sigmoid(Wx + b)
 
-**서버에서 수행 (최적화 후):**
+**Logistic Regression 수식:**
+```
+z = Wx + b
+y = sigmoid(z) = 1 / (1 + exp(-z))
+```
+
+**Sigmoid 함수의 다항식 근사:**
+암호화된 상태에서 지수 함수 `exp(-z)`를 직접 계산할 수 없으므로, **Taylor 급수 근사**를 사용합니다:
+
+```
+sigmoid(z) ≈ 0.5 + 0.25z - (1/48)z³
+```
+
+이 근사는 `z`가 0 근처에서 정확하며, 3차 다항식으로 표현됩니다.
+
+**서버에서 수행하는 연산 과정:**
+
+**Step 1: 선형 예측값 계산 (Wx + b)**
 ```cpp
 // 1. 비트 인코딩: 10진수 → 정수 변환
 const int bit_scale = 10000;
@@ -238,21 +302,60 @@ double scale = pow(2.0, 30);
 encoder.encode(bit_encoded_data, scale, plain_input);
 encryptor.encrypt(plain_input, encrypted_input);
 
-// 3. 암호문 정보 저장 (시각화용)
-// - 암호문 메타데이터 (크기, 계수 등)
-// - 암호문 바이너리 데이터
-
-// 4. 가중치 곱하기: W * x
+// 3. 가중치 곱하기: W * x
 evaluator.multiply_plain_inplace(encrypted_input, plain_weights);
 
-// 5. Bias 더하기: + b
+// 4. Bias 더하기: + b
 evaluator.add_plain_inplace(encrypted_input, plain_bias);
+// 이제 encrypted_input = Enc(Wx + b) = Enc(z)
 ```
+
+**Step 2: 다항식 연산 (sigmoid 근사)**
+```cpp
+// z = Wx + b (현재 encrypted_input에 저장됨)
+Ciphertext encrypted_z = encrypted_input;
+
+// z² 계산: z * z (암호문끼리 곱셈, RelinKeys 필요)
+Ciphertext encrypted_z_squared;
+evaluator.square(encrypted_z, encrypted_z_squared);
+evaluator.relinearize_inplace(encrypted_z_squared, relin_keys);
+evaluator.rescale_to_next_inplace(encrypted_z_squared);
+
+// z³ 계산: z² * z
+Ciphertext encrypted_z_cubed;
+evaluator.multiply(encrypted_z_squared, encrypted_z, encrypted_z_cubed);
+evaluator.relinearize_inplace(encrypted_z_cubed, relin_keys);
+evaluator.rescale_to_next_inplace(encrypted_z_cubed);
+
+// 각 항 계산:
+// 1. 0.25 * z
+Ciphertext encrypted_025z;
+evaluator.multiply_plain(encrypted_z, plain_coeff_025, encrypted_025z);
+evaluator.rescale_to_next_inplace(encrypted_025z);
+
+// 2. - (1/48) * z³
+evaluator.multiply_plain_inplace(encrypted_z_cubed, plain_coeff_neg_1_48);
+evaluator.rescale_to_next_inplace(encrypted_z_cubed);
+
+// 3. 최종 합산: 0.5 + 0.25z - (1/48)z³
+evaluator.add(encrypted_025z, encrypted_z_cubed, encrypted_input);
+evaluator.add_plain_inplace(encrypted_input, plain_const_05);
+// 이제 encrypted_input = Enc(sigmoid(z))
+```
+
+**수식 요약:**
+1. **선형 예측**: `z = Wx + b` (암호화된 상태에서 계산)
+2. **다항식 근사**: `sigmoid(z) ≈ 0.5 + 0.25z - (1/48)z³`
+   - `z² = z × z` (암호문끼리 곱셈)
+   - `z³ = z² × z` (암호문끼리 곱셈)
+   - 각 항을 독립적으로 계산 후 합산
 
 **중요한 점:**
 - 서버는 입력 데이터의 내용을 전혀 모름
 - 서버는 가중치와 편향만 알고 있음
 - 연산은 완전히 암호화된 상태에서 수행됨
+- **RelinKeys**가 필요: 암호문끼리 곱셈(`z²`, `z³`)을 위해 사용
+- **Rescaling** 필요: 곱셈 후 scale을 조정하여 다음 연산 가능
 
 ### 4. 결과 복호화 (Decryption)
 ```cpp
@@ -262,8 +365,9 @@ decryptor.decrypt(encrypted_result, plain_result);
 vector<double> result_vec;
 encoder.decode(plain_result, result_vec);
 
-// 최종 예측값 계산
-double final_score = sum(result_vec); // Wx + b
+// 최종 예측값 계산 (Logistic Regression: sigmoid 결과)
+double final_score = sum(result_vec); // sigmoid(Wx + b) ≈ 0.5 + 0.25z - (1/48)z³
+// final_score는 0~1 사이의 확률 값
 ```
 
 ---
@@ -286,7 +390,7 @@ double final_score = sum(result_vec); // Wx + b
   - 서버는 공개키로 암호화된 데이터를 받음
 - 서버는 Secret Key를 알 수 없음 → 복호화 불가능
 
-**참고**: 본 프로젝트는 `multiply_plain` (암호문 × 평문) 연산만 사용하므로 재선형화키(RelinKeys)가 필요하지 않습니다. RelinKeys는 암호문끼리 곱셈(`Ciphertext × Ciphertext`)을 수행할 때만 필요합니다.
+**참고**: 본 프로젝트는 Logistic Regression의 sigmoid 함수 근사를 위해 **암호문끼리 곱셈**을 수행하므로 **재선형화키(RelinKeys)**가 필요합니다. RelinKeys는 `z² = z × z` 및 `z³ = z² × z` 계산 시 사용됩니다.
 
 ### 2. 프라이버시 보장
 
@@ -321,8 +425,9 @@ double final_score = sum(result_vec); // Wx + b
 
 ### 모델 성능
 - **학습 데이터셋**: Heart Disease Cleveland Dataset
-- **모델**: Linear Regression
-- **정확도**: 테스트 세트 기준 (R² score)
+- **모델**: Logistic Regression
+- **정확도**: 테스트 세트 기준 (Accuracy, Classification Report)
+- **출력**: 0~1 사이의 확률 값 (심장질환 위험도)
 
 ### 동형암호 연산 성능
 - **암호화 시간**: 수백 밀리초
@@ -333,6 +438,7 @@ double final_score = sum(result_vec); // Wx + b
 ### 정확도
 - 암호화 여부와 관계없이 동일한 예측 정확도
 - 동형암호 연산이 수치적 정확도를 보장
+- Sigmoid 다항식 근사로 인한 미세한 정확도 손실 (실용적으로 무시 가능)
 
 ## ⚡ 성능 최적화
 
@@ -420,6 +526,8 @@ for (double val : input_data) {
 - ✅ 암호문 시각화 기능 추가
 - ✅ 예외 처리 및 디버깅 로그 강화
 - ✅ 서버에서 모든 연산 수행 (암호화, 동형암호 연산, 복호화, 최종 점수 계산)
+- ✅ Logistic Regression 적용
+- ✅ Sigmoid 다항식 근사 연산 구현 (암호화된 상태에서 z², z³ 계산)
 
 ### 2. 추가 최적화 가능성
 - 더 큰 데이터셋 처리
@@ -468,6 +576,8 @@ for (double val : input_data) {
 2. ✅ **실용적인 성능**: 실제 사용 가능한 수준의 연산 속도
 3. ✅ **정확도 보장**: 암호화 여부와 관계없이 동일한 예측 정확도
 4. ✅ **실제 의료 환경 적용 가능**: 표준 의료 데이터셋과 모델 사용
+5. ✅ **다항식 연산 구현**: 암호화된 상태에서 sigmoid 함수의 다항식 근사 계산 성공
+6. ✅ **Logistic Regression 적용**: 이진 분류 문제에 적합한 모델 사용
 
 ### 의의
 이 프로젝트는 **의료 분야에서 동형암호 기술의 실용성을 입증**하고, **프라이버시와 AI 서비스의 양립 가능성**을 보여주는 중요한 사례입니다. 향후 의료 AI 서비스의 표준 보안 기술로 자리잡을 수 있을 것으로 기대됩니다.

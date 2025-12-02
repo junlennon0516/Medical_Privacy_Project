@@ -35,6 +35,10 @@ int main() {
 	auto sercret_key = keygen.secret_key();
 	PublicKey public_key;
 	keygen.create_public_key(public_key);
+	
+	// RelinKeys 생성 (암호문끼리 곱셈을 위한 키)
+	RelinKeys relin_keys;
+	keygen.create_relin_keys(relin_keys);
 
 	// -- 3. key 공유 (Upload Keys) --
 	ofstream pk_file("Shared_Channel/pub_key.dat", ios::binary);
@@ -49,6 +53,13 @@ int main() {
 	sk_file.close();
 
 	cout << "[Client] Secret key upload to Shared_Channel completed.\n";
+	
+	// -- 5. RelinKeys 저장 (서버에서 다항식 연산용) --
+	ofstream rk_file("Shared_Channel/relin_keys.dat", ios::binary);
+	relin_keys.save(rk_file);
+	rk_file.close();
+
+	cout << "[Client] RelinKeys upload to Shared_Channel completed.\n";
 
 	vector <double> input_data;
 	// result_app.py에서 생성한 raw_data.txt 파일 읽기 (루트 디렉토리)

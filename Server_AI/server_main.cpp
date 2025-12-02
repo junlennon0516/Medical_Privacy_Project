@@ -45,6 +45,7 @@ int main() {
 
         PublicKey public_key;
         SecretKey secret_key;
+        RelinKeys relin_keys;
 
         while (true) {
             ifstream req_file("Shared_Channel/request.txt");
@@ -54,13 +55,16 @@ int main() {
                 // 키 로딩
                 ifstream pk_file("Shared_Channel/pub_key.dat", ios::binary);
                 ifstream sk_file("Shared_Channel/secret_key.dat", ios::binary);
+                ifstream rk_file("Shared_Channel/relin_keys.dat", ios::binary);
 
-                if (pk_file.good() && sk_file.good()) {
+                if (pk_file.good() && sk_file.good() && rk_file.good()) {
                     public_key.load(context, pk_file);
                     secret_key.load(context, sk_file);
+                    relin_keys.load(context, rk_file);
                     pk_file.close();
                     sk_file.close();
-                    cout << "\n[Server] New Keys Loaded successfully!" << "\n";
+                    rk_file.close();
+                    cout << "\n[Server] New Keys Loaded successfully! (PublicKey, SecretKey, RelinKeys)" << "\n";
                 }
                 else {
                     cout << "[Server] Error: Request exists but Keys are missing.\n";
@@ -250,7 +254,108 @@ int main() {
 
                 evaluator.add_plain_inplace(encrypted_input, plain_bias);
 
-                cout << "[Server] Prediction (Wx + b) computed securely." << "\n";
+                cout << "[Server] Linear prediction (Wx + b) computed securely." << "\n";
+
+                // --- 3-1. Logistic Regression: Sigmoid 다항식 근사 연산 ---
+                // sigmoid(z) ≈ 0.5 + 0.25*z - (1/48)*z^3
+                // z = Wx + b (현재 encrypted_input에 저장됨)
+                
+                cout << "[Server] Computing sigmoid polynomial approximation..." << "\n";
+                
+                // z를 복사하여 보존 (z는 나중에 0.25*z 계산에 사용)
+                Ciphertext encrypted_z = encrypted_input;
+                
+                // z^2 계산: z * z (암호문끼리 곱셈)
+                Ciphertext encrypted_z_squared;
+                evaluator.square(encrypted_z, encrypted_z_squared);
+                evaluator.relinearize_inplace(encrypted_z_squared, relin_keys);
+                evaluator.rescale_to_next_inplace(encrypted_z_squared);
+                
+                cout << "[Server] z^2 computed." << "\n";
+                
+                // z^3 계산: z^2 * z
+                Ciphertext encrypted_z_cubed;
+                evaluator.multiply(encrypted_z_squared, encrypted_z, encrypted_z_cubed);
+                evaluator.relinearize_inplace(encrypted_z_cubed, relin_keys);
+                evaluator.rescale_to_next_inplace(encrypted_z_cubed);
+                
+                cout << "[Server] z^3 computed." << "\n";
+                
+                // 각 항을 독립적으로 계산
+                // 1. 0.5 상수 항
+                vector<double> const_05_vec(weights.size(), 0.0);
+                const_05_vec[0] = 0.5 * bit_scale * bit_scale * bit_scale; // 최종 scale에 맞춤
+                Plaintext plain_const_05;
+                double target_scale = pow(2.0, 30); // 최종 scale
+                encoder.encode(const_05_vec, encrypted_z_cubed.parms_id(), target_scale, plain_const_05);
+                
+                // 2. 0.25 * z 항 (z의 scale에 맞춰 계산)
+                vector<double> coeff_025_vec(weights.size(), 0.0);
+                coeff_025_vec[0] = 0.25 * bit_scale * bit_scale; // z의 scale에 맞춤
+                Plaintext plain_coeff_025;
+                encoder.encode(coeff_025_vec, encrypted_z.parms_id(), encrypted_z.scale(), plain_coeff_025);
+                Ciphertext encrypted_025z;
+                evaluator.multiply_plain(encrypted_z, plain_coeff_025, encrypted_025z);
+                evaluator.rescale_to_next_inplace(encrypted_025z);
+                
+                // 3. - (1/48) * z^3 항
+                vector<double> coeff_neg_1_48_vec(weights.size(), 0.0);
+                coeff_neg_1_48_vec[0] = -(1.0 / 48.0) * bit_scale * bit_scale; // z^3의 scale에 맞춤
+                Plaintext plain_coeff_neg_1_48;
+                encoder.encode(coeff_neg_1_48_vec, encrypted_z_cubed.parms_id(), encrypted_z_cubed.scale(), plain_coeff_neg_1_48);
+                evaluator.multiply_plain_inplace(encrypted_z_cubed, plain_coeff_neg_1_48);
+                evaluator.rescale_to_next_inplace(encrypted_z_cubed);
+                
+                // 모든 항의 parms_id와 scale을 맞춘 후 합산
+                // encrypted_025z와 encrypted_z_cubed의 parms_id를 맞춤
+                evaluator.mod_switch_to_inplace(encrypted_025z, encrypted_z_cubed.parms_id());
+                evaluator.mod_switch_to_inplace(encrypted_z_cubed, encrypted_025z.parms_id());
+                
+                // scale을 맞춤 (더 작은 scale로 통일)
+                double scale_025z = encrypted_025z.scale();
+                double scale_z3 = encrypted_z_cubed.scale();
+                double min_scale = min(scale_025z, scale_z3);
+                
+                if (abs(scale_025z - min_scale) > 1.0) {
+                    double ratio = min_scale / scale_025z;
+                    vector<double> scale_vec(weights.size(), 0.0);
+                    scale_vec[0] = ratio;
+                    Plaintext plain_scale;
+                    encoder.encode(scale_vec, encrypted_025z.parms_id(), encrypted_025z.scale(), plain_scale);
+                    evaluator.multiply_plain_inplace(encrypted_025z, plain_scale);
+                    evaluator.rescale_to_next_inplace(encrypted_025z);
+                }
+                
+                if (abs(scale_z3 - min_scale) > 1.0) {
+                    double ratio = min_scale / scale_z3;
+                    vector<double> scale_vec(weights.size(), 0.0);
+                    scale_vec[0] = ratio;
+                    Plaintext plain_scale;
+                    encoder.encode(scale_vec, encrypted_z_cubed.parms_id(), encrypted_z_cubed.scale(), plain_scale);
+                    evaluator.multiply_plain_inplace(encrypted_z_cubed, plain_scale);
+                    evaluator.rescale_to_next_inplace(encrypted_z_cubed);
+                }
+                
+                // 0.25*z - (1/48)*z^3 계산
+                evaluator.add(encrypted_025z, encrypted_z_cubed, encrypted_input);
+                
+                // 0.5 상수 추가 (최종 scale에 맞춤)
+                evaluator.mod_switch_to_inplace(encrypted_input, plain_const_05.parms_id());
+                double final_scale = encrypted_input.scale();
+                if (abs(final_scale - target_scale) > 1.0) {
+                    // scale 조정
+                    double ratio = final_scale / target_scale;
+                    vector<double> scale_vec(weights.size(), 0.0);
+                    scale_vec[0] = ratio;
+                    Plaintext plain_scale;
+                    encoder.encode(scale_vec, encrypted_input.parms_id(), encrypted_input.scale(), plain_scale);
+                    evaluator.multiply_plain_inplace(encrypted_input, plain_scale);
+                    evaluator.rescale_to_next_inplace(encrypted_input);
+                }
+                
+                evaluator.add_plain_inplace(encrypted_input, plain_const_05);
+                
+                cout << "[Server] Sigmoid polynomial (0.5 + 0.25*z - (1/48)*z^3) computed securely." << "\n";
 
                 // --- 4. 복호화 및 최종 점수 계산 ---
                 Decryptor decryptor(context, secret_key);
